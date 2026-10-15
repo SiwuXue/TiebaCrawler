@@ -529,3 +529,60 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* Log-level summary cards: keep the four counts aligned above the log list. */
+.log-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin: 0 0 20px;
+}
+.log-summary > div {
+  min-width: 0;
+  min-height: 76px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 17px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-bg);
+  box-shadow: var(--shadow-sm);
+}
+.log-summary > div > span:last-child {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.log-summary small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.3;
+}
+.log-summary strong {
+  color: var(--ink);
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.log-summary-dot {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+}
+.log-summary-dot.info-dot { background: var(--blue); }
+.log-summary-dot.success-dot { background: var(--green); }
+.log-summary-dot.warning-dot { background: var(--amber); }
+.log-summary-dot.error-dot { background: var(--red); }
+
+@media (max-width: 900px) {
+  .log-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .log-summary > div { min-height: 68px; padding: 12px 14px; }
+}
+@media (max-width: 440px) {
+  .log-summary { gap: 8px; }
+  .log-summary > div { min-height: 62px; gap: 9px; padding: 10px; }
+  .log-summary strong { font-size: 18px; }
+}
