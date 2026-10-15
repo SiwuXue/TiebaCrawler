@@ -12,3 +12,5 @@ python-sidecar/tests/__pycache__/
 
 # Local-only HTML prototype
 docs/
+
+/docs/ui-prototype/
