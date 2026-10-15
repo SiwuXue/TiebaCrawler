@@ -9,3 +9,6 @@ python-sidecar/.pyinstaller-spec/
 python-sidecar/__pycache__/
 python-sidecar/tieba_sidecar/__pycache__/
 python-sidecar/tests/__pycache__/
+
+# Local-only HTML prototype
+docs/

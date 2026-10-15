@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   ArrowDownToLine,
+  ArrowLeft,
   ArrowRight,
   Check,
   CheckCircle2,
@@ -21,7 +22,6 @@ import {
   Info,
   Link2,
   ListChecks,
-  ListFilter,
   LoaderCircle,
   MessageCircle,
   MessageSquare,
@@ -29,6 +29,7 @@ import {
   Monitor,
   MoreHorizontal,
   Play,
+  RotateCcw,
   Search,
   Settings,
   ShieldCheck,
@@ -108,7 +109,6 @@ const navItems = [
   { id: 'tasks' as const, label: '采集任务', icon: ListChecks },
   { id: 'data' as const, label: '数据中心', icon: Database },
   { id: 'logs' as const, label: '运行日志', icon: FileText },
-  { id: 'settings' as const, label: '设置', icon: Settings },
 ]
 
 const modeOptions = [
@@ -220,6 +220,8 @@ const initialLogs: MockLog[] = [
 const page = ref<Page>('tasks')
 const demoMode = ref(!isDesktopRuntime())
 const sidebarCollapsed = ref(true)
+const currentStep = ref(1)
+const advancedOptionsOpen = ref(false)
 const mode = ref<CrawlMode>('keyword')
 const dataTab = ref<DataTab>('帖子')
 const logFilter = ref<'全部' | LogLevel>('全部')
@@ -241,6 +243,7 @@ const settingsInterval = ref(1.5)
 const showDetail = ref(false)
 const selectedPost = ref<MockPost | null>(null)
 const dataQuery = ref('')
+const dataRange = ref<'全部任务' | '最近 7 天'>('全部任务')
 const logQuery = ref('')
 const exportMenuOpen = ref(false)
 const simulateErrorNext = ref(false)
@@ -258,24 +261,46 @@ const refreshTimer = ref<number | undefined>()
 let unlistenCrawler: (() => void) | undefined
 let nextLogId = 8
 
-const pageTitle = computed(() => navItems.find((item) => item.id === page.value)?.label ?? '采集任务')
+const pageTitle = computed(() => page.value === 'settings' ? '设置' : navItems.find((item) => item.id === page.value)?.label ?? '采集任务')
 const isRunning = computed(() => activeTask.value?.status === '运行中')
-const taskSummary = computed(() => [
-  { label: '运行中', value: tasks.value.filter((task) => task.status === '运行中').length },
-  { label: '已完成', value: tasks.value.filter((task) => task.status === '已完成').length },
-  { label: '失败', value: tasks.value.filter((task) => task.status === '失败').length },
-  { label: '已停止', value: tasks.value.filter((task) => task.status === '已停止').length },
-])
-const latestCompleted = computed(() => tasks.value.find((task) => task.status === '已完成'))
+const logCounts = computed(() => ({
+  info: logs.value.filter((entry) => entry.level === '信息').length,
+  success: logs.value.filter((entry) => entry.level === '成功').length,
+  warning: logs.value.filter((entry) => entry.level === '警告').length,
+  error: logs.value.filter((entry) => entry.level === '错误').length,
+}))
+const visibleDataCount = computed(() => dataTab.value === '帖子'
+  ? filteredPosts.value.length
+  : dataTab.value === '评论'
+    ? filteredComments.value.length
+    : demoMode.value
+      ? filteredPosts.value.reduce((sum, post) => sum + post.media, 0)
+      : filteredMedia.value.length)
+
+function isRecentRecord(time: string) {
+  if (time.includes('今天') || time.includes('昨天')) return true
+  const match = time.match(/(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})/)
+  if (!match) return false
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+  const age = Date.now() - date.getTime()
+  return age >= 0 && age <= 7 * 24 * 60 * 60 * 1000
+}
+
 const filteredPosts = computed(() => {
   const query = dataQuery.value.trim().toLowerCase()
-  if (!query) return posts.value
-  return posts.value.filter((post) => [post.title, post.body, post.forum, post.keyword].some((value) => value.toLowerCase().includes(query)))
+  return posts.value.filter((post) => {
+    const matchesRange = dataRange.value === '全部任务' || isRecentRecord(post.time)
+    const matchesQuery = !query || [post.title, post.body, post.forum, post.keyword].some((value) => value.toLowerCase().includes(query))
+    return matchesRange && matchesQuery
+  })
 })
 const filteredComments = computed(() => {
   const query = dataQuery.value.trim().toLowerCase()
-  if (!query) return comments.value
-  return comments.value.filter((comment) => [comment.body, comment.author, comment.postId].some((value) => value.toLowerCase().includes(query)))
+  return comments.value.filter((comment) => {
+    const matchesRange = dataRange.value === '全部任务' || isRecentRecord(comment.time)
+    const matchesQuery = !query || [comment.body, comment.author, comment.postId].some((value) => value.toLowerCase().includes(query))
+    return matchesRange && matchesQuery
+  })
 })
 const filteredLogs = computed(() => {
   const query = logQuery.value.trim().toLowerCase()
@@ -295,9 +320,10 @@ const pageTypes = computed(() => [
 const filteredMedia = computed(() => {
   const query = dataQuery.value.trim().toLowerCase()
   return attachments.value.filter((attachment) => {
-    if (!query) return true
     const post = posts.value.find((item) => item.id === attachment.postId)
-    return [attachment.fileName ?? '', attachment.kind, attachment.sourceUrl, post?.title ?? '', post?.forum ?? ''].some((value) => value.toLowerCase().includes(query))
+    const matchesRange = dataRange.value === '全部任务' || Boolean(post && isRecentRecord(post.time))
+    const matchesQuery = !query || [attachment.fileName ?? '', attachment.kind, attachment.sourceUrl, post?.title ?? '', post?.forum ?? ''].some((value) => value.toLowerCase().includes(query))
+    return matchesRange && matchesQuery
   })
 })
 
@@ -362,7 +388,9 @@ async function refreshDesktopData() {
   maxPosts.value = settingsMaxPosts.value
   maxComments.value = settingsMaxComments.value
   intervalSeconds.value = settingsInterval.value
-  activeTask.value = tasks.value.find((task) => task.status === '运行中') ?? null
+  const runningTask = tasks.value.find((task) => task.status === '运行中')
+  if (runningTask) activeTask.value = runningTask
+  else if (activeTask.value) activeTask.value = tasks.value.find((task) => task.id === activeTask.value?.id) ?? activeTask.value
 }
 
 function scheduleDesktopRefresh() {
@@ -396,7 +424,7 @@ function handleCrawlerEvent(event: CrawlerEvent) {
       const rawStatus = asText(event.data?.status, 'completed')
       task.status = event.type === 'error' ? '失败' : rawStatus === 'stopped' ? '已停止' : rawStatus === 'failed' ? '失败' : '已完成'
       if (task.status === '已完成') task.progress = 100
-      activeTask.value = null
+      activeTask.value = task
     }
     if (event.message) showToast(event.message, event.type === 'error' ? 'error' : 'success')
   }
@@ -437,28 +465,52 @@ function makeTaskName() {
   return `${targetText.value.split(/[\n,，]+/).filter(Boolean).length || 1} 个主页 · 创作者采集`
 }
 
-function startDemoTask() {
-  if (isRunning.value) return
+function validateTaskInputs() {
   if (mode.value === 'keyword' && !keyword.value.trim()) {
     showToast('请先填写搜索关键词', 'warning')
-    return
+    return false
+  }
+  if (mode.value === 'keyword' && !forumName.value.trim()) {
+    showToast('请填写贴吧名称', 'warning')
+    return false
   }
   if (mode.value !== 'keyword' && !targetText.value.trim()) {
     showToast(mode.value === 'detail' ? '请填写帖子链接或 ID' : '请填写主页链接或用户 ID', 'warning')
-    return
+    return false
   }
   if (!Number.isInteger(maxPosts.value) || maxPosts.value < 1 || maxPosts.value > 100) {
+    advancedOptionsOpen.value = true
     showToast('帖子数量需设置为 1 到 100 之间', 'warning')
-    return
+    return false
   }
   if (!Number.isInteger(maxComments.value) || maxComments.value < 1 || maxComments.value > 100) {
+    advancedOptionsOpen.value = true
     showToast('每帖评论数量需设置为 1 到 100 之间', 'warning')
-    return
+    return false
   }
   if (intervalSeconds.value < 1.5) {
+    advancedOptionsOpen.value = true
     showToast('请求间隔不能低于 1.5 秒', 'warning')
-    return
+    return false
   }
+  return true
+}
+
+function advanceTaskWizard() {
+  if (isRunning.value) return
+  if (currentStep.value === 1) currentStep.value = 2
+  else if (currentStep.value === 2 && validateTaskInputs()) currentStep.value = 3
+  else if (currentStep.value === 3) startDemoTask()
+}
+
+function returnToTaskStep(step: number) {
+  if (isRunning.value || step >= currentStep.value) return
+  currentStep.value = step
+}
+
+function startDemoTask() {
+  if (isRunning.value) return
+  if (!validateTaskInputs()) return
 
   if (!demoMode.value) {
     void desktopApi.startTask({
@@ -657,23 +709,58 @@ async function copyArchiveRoot() {
   }
 }
 
-function refreshLogs() {
-  if (demoMode.value) {
-    showToast('演示日志已刷新', 'success')
-    return
-  }
-  void desktopApi.getLogs().then((rows) => {
-    logs.value = rows.map((row) => ({ id: asNumber(row.id), time: asText(row.time), level: asText(row.level, '信息') as LogLevel, message: asText(row.message) }))
-    showToast('日志已刷新', 'success')
-  }).catch((error) => showToast(String(error), 'error'))
-}
-
 function downloadLogs() {
   if (demoMode.value) {
     showToast('演示日志未连接真实文件', 'info')
     return
   }
   void desktopApi.exportData('logs', 'JSONL', logQuery.value.trim()).then((path) => showToast(`日志已导出：${path}`, 'success')).catch((error) => showToast(String(error), 'error'))
+}
+
+function clearLogFilters() {
+  logFilter.value = '全部'
+  logQuery.value = ''
+}
+
+function resetDemo() {
+  if (!demoMode.value) return
+  if (taskTimer.value) window.clearInterval(taskTimer.value)
+  taskTimer.value = undefined
+  currentStep.value = 1
+  advancedOptionsOpen.value = false
+  mode.value = 'keyword'
+  keyword.value = '城市徒步'
+  forumName.value = '城市徒步吧'
+  targetText.value = ''
+  maxPosts.value = 20
+  maxComments.value = 50
+  intervalSeconds.value = 1.5
+  includeComments.value = true
+  includeNested.value = true
+  downloadMedia.value = true
+  dataTab.value = '帖子'
+  dataQuery.value = ''
+  dataRange.value = '全部任务'
+  logFilter.value = '全部'
+  logQuery.value = ''
+  simulateErrorNext.value = false
+  activeTask.value = null
+  posts.value = [...initialPosts]
+  comments.value = [...initialComments]
+  tasks.value = [...initialTasks]
+  logs.value = [...initialLogs]
+  attachments.value = []
+  nextLogId = 8
+  closeDetail()
+  page.value = 'tasks'
+  showToast('演示内容已恢复为初始状态', 'success')
+}
+
+function createAnotherTask() {
+  activeTask.value = null
+  currentStep.value = 1
+  advancedOptionsOpen.value = false
+  page.value = 'tasks'
 }
 
 function openPostSource(post: MockPost) {
@@ -728,7 +815,7 @@ onUnmounted(() => {
         <div class="brand-mark" role="img" aria-label="贴吧"><span>吧</span></div>
         <div class="brand-copy">
           <div class="brand-title">贴吧采集助手</div>
-          <div class="brand-subtitle">TIEBA WORKSPACE</div>
+          <div class="brand-subtitle">数据整理工作台</div>
         </div>
       </div>
 
@@ -738,8 +825,8 @@ onUnmounted(() => {
         <ChevronDown class="workspace-chevron" :size="15" />
       </div>
 
-      <div class="nav-label">工作台</div>
       <nav class="side-nav" aria-label="主导航">
+        <div class="nav-label">工作台</div>
         <button
           v-for="item in navItems"
           :key="item.id"
@@ -751,7 +838,12 @@ onUnmounted(() => {
         >
           <component :is="item.icon" :size="18" :stroke-width="1.75" />
           <span>{{ item.label }}</span>
+          <span v-if="item.id === 'data'" class="nav-count">{{ posts.length }}</span>
           <span v-if="item.id === 'tasks' && isRunning" class="nav-pulse"></span>
+        </button>
+        <div class="nav-label nav-label-secondary">偏好设置</div>
+        <button class="nav-item" :class="{ active: page === 'settings' }" :aria-current="page === 'settings' ? 'page' : undefined" :title="sidebarCollapsed ? '设置' : undefined" @click="setPage('settings')">
+          <Settings :size="18" :stroke-width="1.75" /><span>设置</span>
         </button>
       </nav>
 
@@ -771,155 +863,117 @@ onUnmounted(() => {
       <header class="topbar">
         <div class="breadcrumbs"><span>贴吧工作台</span><ChevronRight :size="14" /><strong>{{ pageTitle }}</strong></div>
         <div class="topbar-actions">
-          <div class="demo-pill" :class="{ 'live-pill': !demoMode }"><span class="demo-pill-dot"></span>{{ demoMode ? '交互原型' : '本地采集' }}</div>
-          <button class="icon-button topbar-help" :title="demoMode ? '原型说明' : '采集说明'" :aria-label="demoMode ? '原型说明' : '采集说明'" @click="showToast(demoMode ? '当前为交互原型，所有任务与数据均为模拟内容' : '仅整理公开内容；登录在 Chrome 中手动完成，任务和数据保存在本机', 'info')"><CircleAlert :size="17" /></button>
+          <div class="demo-pill" :class="{ 'live-pill': !demoMode }"><span class="demo-pill-dot"></span>{{ demoMode ? '本地演示' : '本地采集' }}</div>
+          <button v-if="demoMode" class="button button-quiet button-reset" type="button" @click="resetDemo"><RotateCcw :size="15" />重置演示</button>
+          <button v-else class="icon-button topbar-help" title="采集说明" aria-label="采集说明" @click="showToast('仅整理公开内容；登录在 Chrome 中手动完成，任务和数据保存在本机', 'info')"><CircleAlert :size="17" /></button>
         </div>
       </header>
 
       <div class="content-scroll">
         <div class="content-wrap">
           <div class="prototype-notice">
-            <div class="notice-left"><span class="notice-icon"><Info :size="15" /></span><span><strong>{{ demoMode ? '原型演示' : '本地采集' }}</strong><span class="notice-separator">·</span>{{ demoMode ? '不会启动真实采集，页面数据为虚构样例' : '任务和媒体存储在本机；仅采集贴吧公开内容' }}</span></div>
-            <button class="notice-link" @click="setPage('settings')">查看使用说明 <ArrowRight :size="14" /></button>
+            <div class="notice-left"><span class="notice-icon"><Info :size="15" /></span><span><strong>{{ demoMode ? '交互原型' : '本地采集' }}</strong><span class="notice-separator">·</span>{{ demoMode ? '界面使用模拟数据，不会连接百度贴吧或启动真实采集。' : '任务、数据和媒体保存在本机；仅整理贴吧公开内容。' }}</span></div>
+            <span class="notice-tag">{{ demoMode ? '仅用于交互演示' : '数据仅保存在本机' }}</span>
           </div>
 
           <template v-if="page === 'tasks'">
             <div class="page-heading task-heading">
-              <div>
-                <div class="eyebrow"><span class="eyebrow-line"></span>数据采集</div>
-                <h1>采集任务</h1>
-                <p>设置采集范围，整理贴吧公开内容与讨论。</p>
-              </div>
-              <button class="button button-secondary" @click="setPage('data')"><Database :size="16" />查看数据中心</button>
+              <div><div class="eyebrow"><span class="eyebrow-line"></span>开始整理公开内容</div><h1>创建采集任务</h1><p>按步骤填写采集范围，确认后即可开始整理。</p></div>
+              <button class="button button-secondary" @click="setPage('data')"><Database :size="17" />查看已采集数据</button>
             </div>
 
-            <section class="task-overview-strip surface" aria-label="任务状态统计">
-              <div v-for="item in taskSummary" :key="item.label" class="task-overview-item">
-                <span>{{ item.label }}</span><strong>{{ item.value }}</strong><small>项</small>
-              </div>
-            </section>
+            <div class="wizard-stepper" aria-label="创建任务步骤">
+              <button v-for="(label, index) in ['选择方式', '设置范围', '确认启动']" :key="label" class="wizard-step" :class="{ current: currentStep === index + 1, complete: currentStep > index + 1 }" :aria-current="currentStep === index + 1 ? 'step' : undefined" :disabled="isRunning || index + 1 >= currentStep" @click="returnToTaskStep(index + 1)">
+                <span class="wizard-step-number"><Check v-if="currentStep > index + 1" :size="15" /> <template v-else>{{ index + 1 }}</template></span><span><strong>{{ label }}</strong><small>{{ ['从哪里开始采集', '选择内容与数量', '检查后启动任务'][index] }}</small></span>
+              </button>
+            </div>
 
-            <div class="task-layout">
-              <section class="surface task-form-card">
-                <div class="card-heading">
-                  <div><h2>新建采集</h2><p>选择一种方式开始整理公开内容</p></div>
-                  <span class="step-count"><span>01</span> / 03</span>
+            <div class="wizard-workspace">
+              <section class="surface wizard-card" aria-live="polite">
+                <div class="wizard-heading">
+                  <div><span class="step-kicker">第 {{ currentStep }} 步 · {{ ['采集入口', '采集范围', '任务确认'][currentStep - 1] }}</span><h2>{{ ['你想从哪里开始？', '选择要整理的内容', '检查一下任务设置'][currentStep - 1] }}</h2><p>{{ ['选择一种采集方式，后面可以继续调整采集范围。', '填写采集对象，并决定需要保存哪些内容。', '确认无误后将开始采集，运行过程中可以随时停止。'][currentStep - 1] }}</p></div>
+                  <span class="required-note"><span>*</span>为必填项</span>
                 </div>
-                <form @submit.prevent="startDemoTask">
-                  <div class="section-caption"><span>采集方式</span><span class="caption-note">选择一种采集方式</span></div>
-                  <div class="mode-grid" role="tablist" aria-label="采集方式">
-                    <button v-for="item in modeOptions" :key="item.id" type="button" class="mode-option" :class="{ selected: mode === item.id }" role="tab" :aria-selected="mode === item.id" @click="mode = item.id">
-                      <span class="mode-icon"><component :is="item.icon" :size="17" /></span>
-                      <span class="mode-copy"><strong>{{ item.title }}</strong><small>{{ item.detail }}</small></span>
-                      <span class="mode-check"><Check :size="12" /></span>
+
+                <div v-if="currentStep === 1" class="wizard-panel mode-panel">
+                  <div class="mode-grid wizard-mode-grid" role="radiogroup" aria-label="采集方式">
+                    <button v-for="item in modeOptions" :key="item.id" class="mode-card" :class="{ selected: mode === item.id }" type="button" role="radio" :aria-checked="mode === item.id" @click="mode = item.id">
+                      <span class="mode-icon"><component :is="item.icon" :size="21" /></span><span class="mode-copy"><strong>{{ item.title }}</strong><small>{{ item.id === 'creator' ? '整理某个用户主页公开的帖子' : item.id === 'detail' ? '已有链接或帖子 ID，直接查看详情' : '按关键词查找贴吧中的相关帖子' }}</small></span><span class="radio-mark"></span>
                     </button>
                   </div>
+                  <div class="inline-tip"><Info :size="17" /><span><strong>第一次使用？</strong>建议先从关键词搜索开始，范围更容易理解和控制。</span></div>
+                </div>
 
-                  <div class="form-fields">
-                    <template v-if="mode === 'keyword'">
-                      <label class="field-block">
-                        <span class="field-label">搜索关键词 <span class="required-mark">*</span><span class="field-label-side">支持逗号或换行分隔</span></span>
-                        <div class="input-wrap"><Search :size="17" /><input v-model.trim="keyword" type="text" placeholder="例如：城市徒步、周末露营" autocomplete="off" /></div>
-                      </label>
-                      <label class="field-block">
-                        <span class="field-label">限定贴吧 <span class="optional-mark">选填</span></span>
-                        <div class="input-wrap"><MessageCircle :size="17" /><input v-model.trim="forumName" type="text" placeholder="例如：杭州吧" autocomplete="off" /><span class="input-trailing">吧</span></div>
-                      </label>
-                    </template>
-                    <template v-else>
-                      <label class="field-block">
-                        <span class="field-label">{{ mode === 'detail' ? '帖子链接或 ID' : '主页链接或用户 ID' }} <span class="required-mark">*</span><span class="field-label-side">支持多条，按行输入</span></span>
-                        <textarea v-model.trim="targetText" class="textarea-control" :placeholder="modeTargetPlaceholder()" rows="3"></textarea>
-                        <span class="field-footnote"><Link2 :size="13" /> {{ mode === 'detail' ? '支持 tieba.baidu.com/p/ 链接' : '支持贴吧个人主页链接' }}</span>
-                      </label>
-                    </template>
+                <div v-else-if="currentStep === 2" class="wizard-panel range-panel">
+                  <div class="field-grid">
+                    <label v-if="mode === 'keyword'" class="field"><span>搜索关键词 <i>*</i></span><input v-model.trim="keyword" type="text" placeholder="例如：城市徒步、周末骑行" autocomplete="off" /><small>填写你想查找的主题或词语。</small></label>
+                    <label v-if="mode === 'keyword'" class="field"><span>贴吧名称 <i>*</i></span><input v-model.trim="forumName" type="text" placeholder="例如：摄影吧" autocomplete="off" /><small>填写帖子所在的贴吧名称。</small></label>
+                    <label v-else class="field field-full"><span>{{ mode === 'detail' ? '帖子链接或 ID' : '用户主页链接或用户名' }} <i>*</i></span><textarea v-model.trim="targetText" :placeholder="modeTargetPlaceholder()" rows="3"></textarea><small>{{ mode === 'detail' ? '支持 tieba.baidu.com/p/ 帖子链接，多个目标可分行填写。' : '只整理该主页中公开可见的内容。' }}</small></label>
                   </div>
+                  <div class="section-divider"><span>采集内容</span><small>可按需选择</small></div>
+                  <div class="option-list">
+                    <label class="option-row"><span class="option-icon"><MessageSquare :size="19" /></span><span class="option-copy"><strong>采集帖子回复</strong><small>同时整理每个帖子的楼层回复</small></span><input v-model="includeComments" class="switch-input" type="checkbox" /><span class="switch"></span></label>
+                    <label class="option-row" :class="{ 'option-disabled': !includeComments }"><span class="option-icon"><MessageCircle :size="19" /></span><span class="option-copy"><strong>包含楼中楼回复</strong><small>采集回复下面的进一步讨论</small></span><input v-model="includeNested" class="switch-input" type="checkbox" :disabled="!includeComments" /><span class="switch"></span></label>
+                    <label class="option-row"><span class="option-icon"><Image :size="19" /></span><span class="option-copy"><strong>下载图片和视频</strong><small>处理正文媒体，不下载头像和表情</small></span><input v-model="downloadMedia" class="switch-input" type="checkbox" /><span class="switch"></span></label>
+                  </div>
+                  <button class="advanced-toggle" type="button" :aria-expanded="advancedOptionsOpen" @click="advancedOptionsOpen = !advancedOptionsOpen"><SlidersHorizontal :size="18" /><span><strong>高级选项</strong><small>采集数量与请求间隔</small></span><ChevronDown :size="17" :class="{ rotated: advancedOptionsOpen }" /></button>
+                  <div v-if="advancedOptionsOpen" class="advanced-fields">
+                    <label class="field compact-field"><span>最多采集帖子</span><div class="input-suffix"><input v-model.number="maxPosts" type="number" min="1" max="100" /><span>篇（最多 100）</span></div></label>
+                    <label class="field compact-field"><span>每帖最多回复</span><div class="input-suffix"><input v-model.number="maxComments" type="number" min="1" max="100" /><span>条（最多 100）</span></div></label>
+                    <label class="field compact-field"><span>请求间隔</span><div class="input-suffix"><input v-model.number="intervalSeconds" type="number" min="1.5" step="0.5" /><span>秒（至少 1.5 秒）</span></div></label>
+                  </div>
+                  <div class="browser-inline-note"><Monitor :size="16" /><span>登录方式：<strong>{{ browserMode === 'existing' ? '连接 Chrome（CDP）' : '应用专用浏览器' }}</strong></span><button type="button" @click="setPage('settings')">更改设置 <ArrowRight :size="14" /></button></div>
+                </div>
 
-                  <div class="section-caption limits-caption"><span>采集范围</span><span class="caption-note">轻量默认值 · 上限 100</span></div>
-                  <div class="limit-grid">
-                    <label class="number-field"><span>最多帖子</span><div class="number-input"><input v-model.number="maxPosts" type="number" min="1" max="100" /><span>篇</span></div><small>1–100 篇</small></label>
-                    <label class="number-field"><span>每帖最多评论</span><div class="number-input"><input v-model.number="maxComments" type="number" min="1" max="100" /><span>条</span></div><small>1–100 条</small></label>
-                    <label class="number-field"><span>请求间隔</span><div class="number-input"><input v-model.number="intervalSeconds" type="number" min="1.5" step="0.5" /><span>秒</span></div><small>不得低于 1.5 秒</small></label>
-                  </div>
+                <div v-else class="wizard-panel review-panel">
+                  <div class="review-banner"><span><Check :size="18" /></span><div><strong>请确认任务信息</strong><small>{{ demoMode ? '将运行模拟流程，不会访问贴吧。' : '将连接本机浏览器开始采集公开内容。' }}</small></div></div>
+                  <dl class="review-list"><div><dt>采集方式</dt><dd>{{ modeOptions.find((item) => item.id === mode)?.title }}</dd></div><div><dt>采集范围</dt><dd>{{ mode === 'keyword' ? `${keyword || '未填写关键词'} · ${forumName || '不限贴吧'}` : targetText || '尚未填写目标' }}</dd></div><div><dt>采集内容</dt><dd>帖子{{ includeComments ? '、回复' : '' }}{{ includeComments && includeNested ? '、楼中楼' : '' }}{{ downloadMedia ? '、图片与视频' : '' }}</dd></div><div><dt>数量限制</dt><dd>最多 {{ maxPosts }} 篇帖子 · 每帖最多 {{ maxComments }} 条回复 · 间隔 {{ intervalSeconds }} 秒</dd></div><div><dt>登录方式</dt><dd>{{ browserMode === 'existing' ? '连接 Chrome（CDP）' : '应用专用浏览器' }}</dd></div></dl>
+                  <div class="review-note"><ShieldCheck :size="17" /><span>仅采集公开内容；请遵守平台规则并控制采集范围。</span></div>
+                  <button v-if="demoMode && !isRunning" class="simulate-error-link" type="button" @click="simulateErrorNext = !simulateErrorNext"><CircleAlert :size="16" />{{ simulateErrorNext ? '已开启：下次启动将演示错误状态' : '预览采集失败状态' }}</button>
+                </div>
 
-                  <div class="section-caption collection-caption"><span>采集内容</span></div>
-                  <div class="toggle-list">
-                    <label class="toggle-row"><span class="toggle-icon"><MessageSquare :size="16" /></span><span class="toggle-copy"><strong>采集评论</strong><small>收集帖子楼层与讨论内容</small></span><input v-model="includeComments" type="checkbox" class="toggle-input" /><span class="toggle-switch"></span></label>
-                    <label class="toggle-row" :class="{ disabled: !includeComments }"><span class="toggle-icon"><MessageCircle :size="16" /></span><span class="toggle-copy"><strong>采集二级回复</strong><small>包含楼中楼对话</small></span><input v-model="includeNested" type="checkbox" class="toggle-input" :disabled="!includeComments" /><span class="toggle-switch"></span></label>
-                    <label class="toggle-row"><span class="toggle-icon"><Image :size="16" /></span><span class="toggle-copy"><strong>下载图片与视频</strong><small>主帖、楼层及子回复附件</small></span><input v-model="downloadMedia" type="checkbox" class="toggle-input" /><span class="toggle-switch"></span></label>
-                  </div>
-
-                  <div class="form-browser-note">
-                    <span class="browser-note-icon"><Monitor :size="15" /></span>
-                    <span>登录方式：<strong>{{ browserMode === 'existing' ? '连接 Chrome（CDP）' : '应用专用浏览器' }}</strong></span>
-                    <button type="button" @click="setPage('settings')">更改设置 <ArrowRight :size="13" /></button>
-                  </div>
-
-                  <div class="form-actions">
-                    <button v-if="!isRunning" class="button button-primary start-button" type="submit"><Play :size="16" fill="currentColor" />{{ demoMode ? '开始模拟任务' : '开始采集' }}</button>
-                    <button v-else class="button button-stop start-button" type="button" @click="stopDemoTask"><Square :size="15" fill="currentColor" />停止任务</button>
-                    <button v-if="demoMode" class="button button-quiet" type="button" :aria-pressed="simulateErrorNext" @click="simulateErrorNext = !simulateErrorNext"><CircleAlert :size="15" />{{ simulateErrorNext ? '下次将模拟异常' : '体验异常状态' }}</button>
-                  </div>
-                </form>
+                <div class="wizard-footer">
+                  <button class="button button-quiet" type="button" :disabled="currentStep === 1 || isRunning" @click="returnToTaskStep(currentStep - 1)"><ArrowLeft :size="17" />上一步</button>
+                  <div class="wizard-footer-right"><span class="footer-hint">{{ isRunning ? '任务进行中，可在右侧停止' : currentStep === 1 ? '选择方式后继续' : currentStep === 2 ? '可以返回修改采集方式' : (demoMode ? '当前使用模拟数据' : '任务数据保存在本机') }}</span><button v-if="!isRunning" class="button button-primary" type="button" @click="advanceTaskWizard"> <Play v-if="currentStep === 3" :size="16" />{{ currentStep === 3 ? (demoMode ? '开始演示任务' : '开始采集') : '下一步' }}<ArrowRight v-if="currentStep < 3" :size="16" /></button><button v-else class="button button-secondary" type="button" disabled><LoaderCircle :size="16" />任务进行中</button></div>
+                </div>
               </section>
 
-              <div class="task-side-column">
-                <section class="surface live-card">
-                  <div class="card-heading live-card-heading">
-                    <div><h2>任务状态</h2><p>当前工作区运行概况</p></div>
-                    <span class="status-badge" :class="statusClass(activeTask?.status)"><span class="status-dot"></span>{{ activeTask?.status ?? '待命' }}</span>
-                  </div>
-                  <div v-if="activeTask" class="active-task-panel">
-                    <div class="active-task-title"><span class="task-type-icon"><component :is="modeOptions.find((item) => item.id === activeTask?.mode)?.icon" :size="16" /></span><div><strong>{{ activeTask.name }}</strong><small>{{ activeTask.id }}</small></div><button class="icon-button more-button" aria-label="更多任务操作" @click="showToast('原型中暂不提供更多任务操作', 'info')"><MoreHorizontal :size="18" /></button></div>
-                    <div class="progress-meta"><span>{{ activeTask.status === '运行中' ? '正在采集' : activeTask.status === '失败' ? '任务中断' : activeTask.status === '已停止' ? '已手动停止' : '采集完成' }}</span><strong>{{ activeTask.progress }}%</strong></div>
-                    <div class="progress-track"><span class="progress-fill" :class="{ failed: activeTask.status === '失败' }" :style="{ width: `${activeTask.progress}%` }"></span></div>
-                    <div class="task-stats-grid">
-                      <div><span>帖子</span><strong>{{ activeTask.posts }}</strong><small>篇</small></div>
-                      <div><span>评论</span><strong>{{ activeTask.comments }}</strong><small>条</small></div>
-                      <div><span>附件</span><strong>{{ demoMode ? (activeTask.posts > 0 ? Math.min(activeTask.posts, 7) : 0) : attachments.length }}</strong><small>个</small></div>
-                    </div>
-                    <div class="live-log-head"><span><span class="live-indicator"></span>最近动态</span><button @click="setPage('logs')">全部日志 <ArrowRight :size="13" /></button></div>
-                    <div class="mini-log-list">
-                      <div v-for="entry in logs.slice(0, 3)" :key="entry.id" class="mini-log-row"><span class="mini-log-time">{{ entry.time }}</span><span class="mini-log-mark" :class="`level-${entry.level}`"></span><span class="mini-log-message">{{ entry.message }}</span></div>
-                    </div>
-                  </div>
-                  <div v-else class="idle-panel">
-                    <div class="idle-illustration"><div class="idle-icon"><ListChecks :size="23" /></div></div>
-                    <strong>准备好开始采集</strong>
-                    <p>填写左侧采集条件后，<br />这里会显示实时任务进度。</p>
-                    <div class="idle-divider"></div>
-                    <div class="idle-steps"><span><CheckCircle2 :size="14" />选择采集方式</span><ChevronRight :size="13" /><span><CheckCircle2 :size="14" />设置采集范围</span><ChevronRight :size="13" /><span><Play :size="12" />启动任务</span></div>
-                  </div>
-                  <div v-if="!activeTask && (latestCompleted || demoMode)" class="recent-completed"><div><span class="tiny-success"><Check :size="11" /></span><span>最近完成</span></div><strong>{{ latestCompleted?.name ?? '城市徒步 · 关键词搜索' }}</strong><small>{{ latestCompleted?.posts ?? 18 }} 篇帖子 <i>·</i> {{ latestCompleted?.comments ?? 236 }} 条评论 <i>·</i> {{ latestCompleted?.time ?? '今天 14:32' }}</small></div>
+              <aside class="wizard-aside">
+                <section class="surface guide-card">
+                  <div class="aside-heading"><span class="aside-icon guide-icon"><Info :size="18" /></span><div><strong>新手小贴士</strong><small>让第一次采集更顺利</small></div></div>
+                  <ol class="guide-list">
+                    <li><span>1</span><p><strong>先用较小范围试试</strong><small>默认最多采集 20 篇帖子。</small></p></li>
+                    <li><span>2</span><p><strong>登录状态由浏览器管理</strong><small>应用不会读取或保存账号信息。</small></p></li>
+                    <li><span>3</span><p><strong>只整理公开内容</strong><small>遇到平台提示时请停止操作。</small></p></li>
+                  </ol>
+                  <button class="aside-link" type="button" @click="setPage('settings')">了解浏览器设置 <ArrowRight :size="14" /></button>
                 </section>
-
-                <section class="tip-card">
-                  <div class="tip-icon"><ShieldCheck :size="17" /></div>
-                  <div><strong>温和采集提醒</strong><p>请仅采集公开内容，并遵守贴吧服务条款。当前任务上限为 100 篇帖子。</p></div>
-                  <button class="tip-more" title="查看说明" aria-label="查看采集说明" @click="setPage('settings')"><ChevronRight :size="16" /></button>
+                <section class="surface status-card">
+                  <div class="aside-heading"><span class="aside-icon status-icon"><Clock3 :size="18" /></span><div><strong>任务状态</strong><small>{{ activeTask ? activeTask.name : '尚未启动' }}</small></div><span class="status-badge" :class="statusClass(activeTask?.status)"><span class="status-dot"></span>{{ activeTask?.status ?? '未开始' }}</span></div>
+                  <div v-if="isRunning && activeTask" class="status-running-view">
+                    <div class="progress-heading"><span>正在整理公开内容…</span><strong>{{ activeTask.progress }}%</strong></div>
+                    <div class="progress-track"><span :style="{ width: `${activeTask.progress}%` }"></span></div>
+                    <div class="progress-stats"><span><strong>{{ activeTask.posts }}</strong> 篇帖子</span><span><strong>{{ activeTask.comments }}</strong> 条回复</span></div>
+                    <div class="mini-log-list"><div v-for="entry in logs.slice(0, 3)" :key="entry.id" class="mini-log-row"><span class="mini-log-mark" :class="`level-${entry.level}`"></span><span class="mini-log-message">{{ entry.message }}</span></div></div>
+                    <button class="button button-stop" type="button" @click="stopDemoTask"><Square :size="15" />停止任务</button>
+                  </div>
+                  <div v-else-if="activeTask" class="status-result" :class="{ 'is-error': activeTask.status === '失败' }">
+                    <span class="result-symbol"><CircleAlert v-if="activeTask.status === '失败'" :size="21" /><Square v-else-if="activeTask.status === '已停止'" :size="19" /><Check v-else :size="21" /></span>
+                    <strong>{{ activeTask.status === '失败' ? '任务遇到问题' : activeTask.status === '已停止' ? '任务已停止' : '任务已完成' }}</strong>
+                    <p v-if="activeTask.status === '失败'">采集过程中遇到问题，已保留 {{ activeTask.posts }} 篇帖子和 {{ activeTask.comments }} 条回复。</p>
+                    <p v-else-if="activeTask.status === '已停止'">已保存当前进度：{{ activeTask.posts }} 篇帖子、{{ activeTask.comments }} 条回复。</p>
+                    <p v-else>本次整理了 {{ activeTask.posts }} 篇帖子和 {{ activeTask.comments }} 条回复。</p>
+                    <button class="button button-secondary" type="button" @click="createAnotherTask">再创建一个任务</button>
+                  </div>
+                  <div v-else class="status-empty"><span class="status-empty-icon"><ListChecks :size="22" /></span><strong>准备好后开始采集</strong><p>运行状态、进度与日志会显示在这里。</p></div>
                 </section>
-              </div>
+              </aside>
             </div>
 
             <section class="surface recent-tasks-card">
-              <div class="section-card-heading"><div><h2>最近任务</h2><p>{{ demoMode ? '本机工作区中的模拟任务记录' : '本机 SQLite 中的任务历史' }}</p></div><button class="text-button" @click="setPage('logs')">查看运行日志 <ArrowRight :size="14" /></button></div>
-              <div class="recent-task-table-wrap">
-                <table class="recent-task-table">
-                  <thead><tr><th>任务名称</th><th>采集方式</th><th>状态</th><th>帖子</th><th>评论</th><th>时间</th><th><span class="sr-only">操作</span></th></tr></thead>
-                  <tbody>
-                    <tr v-for="task in tasks.slice(0, 4)" :key="task.id">
-                      <td><div class="task-name-cell"><span class="tiny-task-icon"><MessageCircle :size="14" /></span><span><strong>{{ task.name }}</strong><small>{{ task.id }}</small></span></div></td>
-                      <td><span class="mode-tag">{{ modeOptions.find((item) => item.id === task.mode)?.title }}</span></td>
-                      <td><span class="table-status" :class="statusClass(task.status)"><span class="status-dot"></span>{{ task.status }}</span></td>
-                      <td class="numeric-cell">{{ task.posts }}</td>
-                      <td class="numeric-cell">{{ task.comments }}</td>
-                      <td class="muted-cell">{{ task.time }}</td>
-                      <td><button class="row-more" title="查看详情" aria-label="查看任务详情" @click="setPage('logs')"><MoreHorizontal :size="17" /></button></td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              <div class="table-card-footer"><span>显示 <strong>{{ Math.min(tasks.length, 4) }}</strong> 条任务记录</span><button class="text-button" @click="setPage('data')">打开数据中心 <ArrowRight :size="13" /></button></div>
+              <div class="section-card-heading"><div><h2>最近任务</h2><p>{{ demoMode ? '本机工作区中的模拟任务记录' : '本机 SQLite 中的任务历史' }}</p></div><button class="text-button" @click="setPage('logs')">查看全部记录 <ArrowRight :size="15" /></button></div>
+              <div class="recent-task-table-wrap"><table class="recent-task-table"><thead><tr><th>任务名称</th><th>采集方式</th><th>完成时间</th><th>帖子</th><th>回复</th><th>状态</th></tr></thead><tbody><tr v-for="task in tasks.slice(0, 5)" :key="task.id"><td><div class="task-name-cell"><span><strong>{{ task.name }}</strong><small>{{ task.id }}</small></span></div></td><td>{{ modeOptions.find((item) => item.id === task.mode)?.title }}</td><td class="muted-cell">{{ task.time }}</td><td class="numeric-cell">{{ task.posts }}</td><td class="numeric-cell">{{ task.comments }}</td><td><span class="table-status" :class="statusClass(task.status)"><span class="status-dot"></span>{{ task.status }}</span></td></tr><tr v-if="tasks.length === 0"><td colspan="6" class="task-table-empty">还没有任务记录，完成一个采集任务后会显示在这里。</td></tr></tbody></table></div>
+              <div class="table-card-footer"><span>共 <strong>{{ tasks.length }}</strong> 条任务记录</span><button class="text-button" @click="setPage('data')">打开数据中心 <ArrowRight :size="14" /></button></div>
             </section>
           </template>
 
@@ -930,14 +984,18 @@ onUnmounted(() => {
             </div>
 
             <div class="data-summary-grid">
-              <div v-for="item in pageTypes" :key="item.label" class="surface summary-card"><span class="summary-icon" :class="`summary-${item.label}`"><component :is="item.icon" :size="17" /></span><div><span>{{ item.label }}记录</span><strong>{{ item.value.toLocaleString('zh-CN') }}</strong></div><small class="summary-change"><span>{{ demoMode ? '演示' : '本机' }}</span>{{ demoMode ? '样例' : 'SQLite' }}</small></div>
+              <div class="surface summary-card"><span class="summary-icon summary-帖子"><FileText :size="17" /></span><div><span>帖子</span><strong>{{ posts.length.toLocaleString('zh-CN') }}</strong></div><small class="summary-change"><span>{{ demoMode ? '演示' : '本机' }}</span>记录</small></div>
+              <div class="surface summary-card"><span class="summary-icon summary-评论"><MessageSquareText :size="17" /></span><div><span>回复</span><strong>{{ comments.length.toLocaleString('zh-CN') }}</strong></div><small class="summary-change"><span>{{ demoMode ? '演示' : '本机' }}</span>包含楼中楼</small></div>
+              <div class="surface summary-card"><span class="summary-icon summary-媒体"><Image :size="17" /></span><div><span>媒体附件</span><strong>{{ pageTypes[2].value.toLocaleString('zh-CN') }}</strong></div><small class="summary-change"><span>图片与视频</span></small></div>
+              <div class="surface summary-card"><span class="summary-icon summary-更新"><Clock3 :size="17" /></span><div><span>最近更新</span><strong class="metric-date">{{ tasks[0]?.time ?? '暂无记录' }}</strong></div><small class="summary-change"><span>本地保存</span></small></div>
             </div>
 
             <section class="surface data-table-card">
               <div class="data-toolbar">
                 <div class="segmented-tabs" role="tablist" aria-label="数据类型"><button v-for="tab in ['帖子', '评论', '媒体'] as DataTab[]" :key="tab" role="tab" :aria-selected="dataTab === tab" :class="{ active: dataTab === tab }" @click="dataTab = tab">{{ tab }}<span>{{ tab === '帖子' ? posts.length : tab === '评论' ? comments.length : pageTypes[2].value }}</span></button></div>
-                <div class="data-filters"><label class="search-field"><Search :size="16" /><input v-model="dataQuery" class="data-search-input" type="search" :placeholder="dataTab === '评论' ? '搜索评论内容…' : dataTab === '媒体' ? '搜索附件、帖子或来源…' : '搜索标题、贴吧或关键词…'" /><kbd>Ctrl K</kbd></label><button class="filter-button" @click="showToast(demoMode ? '所有记录均来自演示任务' : '当前按关键词即时筛选本地归档', 'info')"><Filter :size="15" />筛选</button><button class="icon-button data-more" aria-label="更多数据操作" @click="showToast('可使用搜索框筛选当前记录', 'info')"><SlidersHorizontal :size="17" /></button></div>
+                <div class="data-filters"><label class="search-field"><Search :size="16" /><input v-model="dataQuery" class="data-search-input" type="search" :placeholder="dataTab === '评论' ? '搜索评论内容…' : dataTab === '媒体' ? '搜索附件、帖子或来源…' : '搜索标题、贴吧或关键词…'" /><kbd>Ctrl K</kbd></label></div>
               </div>
+              <div class="data-filter-row"><span class="filter-caption"><Filter :size="15" /></span><span>筛选：</span><button v-for="range in ['全部任务', '最近 7 天'] as const" :key="range" class="filter-chip" :class="{ active: dataRange === range }" :aria-pressed="dataRange === range" @click="dataRange = range">{{ range }}</button><span class="result-count">显示 {{ visibleDataCount }} 条{{ dataTab === '评论' ? '回复' : dataTab === '媒体' ? '附件' : '帖子' }}</span></div>
 
               <template v-if="dataTab === '帖子'">
                 <div v-if="filteredPosts.length" class="data-table-wrap"><table class="data-table posts-table"><thead><tr><th>帖子内容</th><th>贴吧</th><th>作者</th><th>发布时间</th><th class="centered">回复</th><th>附件</th><th></th></tr></thead><tbody>
@@ -992,16 +1050,17 @@ onUnmounted(() => {
           <template v-else-if="page === 'logs'">
             <div class="page-heading">
               <div><div class="eyebrow"><span class="eyebrow-line"></span>任务观测</div><h1>运行日志</h1><p>按时间查看任务状态和采集过程中的提示。</p></div>
-              <button class="button button-secondary" @click="refreshLogs"><LoaderCircle :size="16" />刷新日志</button>
+              <button class="button button-secondary" @click="clearLogFilters"><RotateCcw :size="15" />清除筛选</button>
             </div>
-            <div class="log-overview-grid">
-              <div class="surface log-overview-card"><span class="log-overview-icon info-icon"><FileText :size="17" /></span><div><span>日志条数</span><strong>{{ logs.length }}</strong></div></div>
-              <div class="surface log-overview-card"><span class="log-overview-icon success-icon"><CheckCircle2 :size="17" /></span><div><span>采集成功</span><strong>{{ logs.filter((item) => item.level === '成功').length }}</strong></div></div>
-              <div class="surface log-overview-card"><span class="log-overview-icon warning-icon"><CircleAlert :size="17" /></span><div><span>待关注</span><strong>{{ logs.filter((item) => item.level === '警告' || item.level === '错误').length }}</strong></div></div>
-              <div class="surface log-overview-card"><span class="log-overview-icon time-icon"><Clock3 :size="17" /></span><div><span>最近更新</span><strong class="small-overview-value">{{ logs[0]?.time ?? '—' }}</strong></div></div>
+            <div class="log-summary">
+              <div><span class="log-summary-dot info-dot"></span><span><small>信息</small><strong>{{ logCounts.info }}</strong></span></div>
+              <div><span class="log-summary-dot success-dot"></span><span><small>成功</small><strong>{{ logCounts.success }}</strong></span></div>
+              <div><span class="log-summary-dot warning-dot"></span><span><small>提醒</small><strong>{{ logCounts.warning }}</strong></span></div>
+              <div><span class="log-summary-dot error-dot"></span><span><small>错误</small><strong>{{ logCounts.error }}</strong></span></div>
             </div>
             <section class="surface log-panel">
-              <div class="log-toolbar"><div><h2>全部日志</h2><p>按时间倒序排列</p></div><div class="log-actions"><label class="search-field log-search"><Search :size="15" /><input v-model="logQuery" type="search" placeholder="搜索日志内容" /></label><label class="select-wrap"><ListFilter :size="15" /><select v-model="logFilter" aria-label="筛选日志级别"><option>全部</option><option>信息</option><option>成功</option><option>警告</option><option>错误</option></select><ChevronDown :size="13" /></label><button class="icon-button" title="下载日志" aria-label="下载日志" @click="downloadLogs"><Download :size="16" /></button></div></div>
+              <div class="log-toolbar"><div><h2>全部日志</h2><p>共 {{ logs.length }} 条记录</p></div><div class="log-actions"><label class="search-field log-search"><Search :size="15" /><input v-model="logQuery" type="search" placeholder="搜索日志内容" /></label><button class="icon-button" title="下载日志" aria-label="下载日志" @click="downloadLogs"><Download :size="16" /></button></div></div>
+              <div class="log-filters" role="group" aria-label="日志级别"><button v-for="level in ['全部', '信息', '成功', '警告', '错误'] as const" :key="level" class="filter-chip" :class="{ active: logFilter === level }" :aria-pressed="logFilter === level" @click="logFilter = level">{{ level === '警告' ? '提醒' : level }}</button></div>
               <div v-if="filteredLogs.length" class="log-table"><div v-for="entry in filteredLogs" :key="entry.id" class="log-row"><div class="log-time">{{ entry.time }}</div><div class="log-level" :class="`log-${entry.level}`"><span></span>{{ entry.level }}</div><div class="log-content">{{ entry.message }}</div><button class="log-detail-button" title="查看日志" aria-label="查看日志" @click="showToast(entry.message, entry.level === '错误' ? 'error' : 'info')"><MoreHorizontal :size="16" /></button></div></div>
               <div v-else class="empty-state compact-empty"><div class="empty-icon"><Search :size="20" /></div><strong>没有匹配的日志</strong><p>尝试调整关键字或日志级别。</p></div>
               <div class="log-panel-footer"><span><span class="live-indicator"></span>{{ demoMode ? '原型日志流已暂停' : '实时日志本机保存' }}</span><span>当前显示 {{ filteredLogs.length }} 条</span></div>
@@ -1013,7 +1072,7 @@ onUnmounted(() => {
               <div><div class="eyebrow"><span class="eyebrow-line"></span>工作区偏好</div><h1>设置</h1><p>管理浏览器登录方式、任务归档和采集边界。</p></div>
               <button class="button button-secondary" @click="savePreferences"><Check :size="16" />保存设置</button>
             </div>
-            <div class="settings-layout">
+            <div class="settings-stack">
               <div class="settings-main">
                 <section class="surface settings-card">
                   <div class="settings-card-heading"><div class="settings-icon blue"><Monitor :size="18" /></div><div><h2>浏览器与登录</h2><p>选择贴吧登录状态的使用方式</p></div><span class="settings-step">01</span></div>
@@ -1044,13 +1103,9 @@ onUnmounted(() => {
                 <section class="surface settings-card">
                   <div class="settings-card-heading"><div class="settings-icon green"><SlidersHorizontal :size="18" /></div><div><h2>采集边界</h2><p>适用于新建任务的轻量默认值</p></div><span class="settings-step">03</span></div>
                   <div class="settings-limits-grid"><label><span class="setting-metric-label">默认帖子数</span><strong><input v-model.number="settingsMaxPosts" class="settings-number" type="number" min="1" max="100" /> <small>篇</small></strong><span class="setting-metric-cap">上限 100 篇 / 任务</span></label><label><span class="setting-metric-label">默认评论数</span><strong><input v-model.number="settingsMaxComments" class="settings-number" type="number" min="1" max="100" /> <small>条</small></strong><span class="setting-metric-cap">上限 100 条 / 帖</span></label><label><span class="setting-metric-label">最短请求间隔</span><strong><input v-model.number="settingsInterval" class="settings-number" type="number" min="1.5" step="0.5" /> <small>秒</small></strong><span class="setting-metric-cap">可调高，不可调低</span></label></div>
-                  <div class="ethics-note"><span><ShieldCheck :size="16" /></span><p>仅用于个人学习与研究。请遵守贴吧服务条款，不采集非公开内容，不进行大规模采集。</p><button class="text-button" @click="showToast('已打开项目使用说明', 'info')">使用说明 <ArrowRight :size="13" /></button></div>
                 </section>
               </div>
-              <aside class="settings-aside">
-                <section class="about-card"><div class="about-brand"><div class="brand-mark small-mark" role="img" aria-label="贴吧"><span>吧</span></div><span>贴吧采集助手</span></div><span class="version-chip">{{ demoMode ? '原型版 0.1.0' : '桌面版 0.2.0' }}</span><p>桌面端公开内容整理工具，数据存储在本机工作区。</p><div class="about-rule"></div><div class="about-meta"><span>运行平台</span><strong>Windows</strong></div><div class="about-meta"><span>界面语言</span><strong>简体中文</strong></div><div class="about-meta"><span>数据模式</span><strong>{{ demoMode ? '模拟数据' : 'SQLite + 本地文件' }}</strong></div><button class="about-link" @click="showToast(demoMode ? '当前是交互原型，所有样例均为虚构数据' : '采集任务、日志和附件均保存在本机工作区', 'info')">查看项目说明 <ArrowRight :size="14" /></button></section>
-                <section class="privacy-card"><div class="privacy-icon"><ShieldCheck :size="19" /></div><strong>隐私优先</strong><p>{{ demoMode ? '本原型使用虚构样例，不会访问网络，也不会向任何服务上传内容。' : '登录由你在 Chrome 页面手动完成；采集内容和附件仅保存在本机。' }}</p><div class="privacy-check"><CheckCircle2 :size="14" />数据留在本机</div><div class="privacy-check"><CheckCircle2 :size="14" />创作者信息脱敏</div></section>
-              </aside>
+              <div class="privacy-note"><ShieldCheck :size="17" /><span><strong>隐私优先</strong> · {{ demoMode ? '当前使用虚构样例，不会访问网络。' : '任务和媒体保存在本机，仅整理公开内容。' }}请遵守贴吧服务规则与项目许可。</span><button class="text-button" @click="showToast('项目仅限非商业学习与研究使用，请查看 LICENSE 和 NOTICE。', 'info')">查看使用说明 <ArrowRight :size="14" /></button></div>
             </div>
           </template>
 
