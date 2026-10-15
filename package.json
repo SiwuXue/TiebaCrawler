@@ -1,0 +1,26 @@
+{
+  "name": "tieba-crawler",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "powershell -NoProfile -ExecutionPolicy Bypass -File python-sidecar/build.ps1 && tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "lucide-vue-next": "^0.468.0",
+    "vue": "^3.5.22"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.3",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.9",
+    "vue-tsc": "^3.1.1"
+  }
+}

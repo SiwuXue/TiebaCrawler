@@ -1,0 +1,16 @@
+[project]
+name = "tieba-crawler-sidecar"
+version = "0.2.0"
+description = "Isolated JSONL sidecar for the Tieba research desktop app"
+requires-python = ">=3.10"
+dependencies = [
+  "playwright>=1.50,<2",
+  "beautifulsoup4>=4.12,<5",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<9", "pytest-asyncio>=0.24,<2"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

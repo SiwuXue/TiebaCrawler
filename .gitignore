@@ -1,0 +1,11 @@
+node_modules/
+dist/
+src-tauri/target/
+data/
+python-sidecar/.venv/
+python-sidecar/dist/
+python-sidecar/.pyinstaller-work/
+python-sidecar/.pyinstaller-spec/
+python-sidecar/__pycache__/
+python-sidecar/tieba_sidecar/__pycache__/
+python-sidecar/tests/__pycache__/
